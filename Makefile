@@ -21,7 +21,8 @@ RUNTIME_METHODS = '[\
 ]'
 
 INCLUDES = -I/src/C/include \
-          -I/src/om-file-format/c/include
+          -I/src/om-file-format/c/include \
+          -I/src/om-file-format/c/external/lz4/lib
 
 CFLAGS = $(INCLUDES) \
          -msimd128 \
@@ -38,7 +39,8 @@ CFLAGS = $(INCLUDES) \
 
 # Define the source files
 SRC_FILES = $(wildcard /src/C/src/*.c) \
-			$(wildcard /src/om-file-format/c/src/*.c)
+			$(wildcard /src/om-file-format/c/src/*.c) \
+			/src/om-file-format/c/external/lz4/lib/lz4.c
 
 DIST_DIR = dist
 WASM_DIR = $(DIST_DIR)/wasm
