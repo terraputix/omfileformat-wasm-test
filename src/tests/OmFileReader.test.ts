@@ -81,7 +81,7 @@ describe("OmFileReader", () => {
     await reader.initialize();
     const dimensions = reader.getDimensions();
 
-    expect(dimensions).toStrictEqual([721, 1440, 104]);
+    expect(dimensions).toStrictEqual([5, 5]);
   });
 
   // Test getting chunk dimensions
@@ -89,7 +89,7 @@ describe("OmFileReader", () => {
     await reader.initialize();
     const chunks = reader.getChunkDimensions();
 
-    expect(chunks).toStrictEqual([1, 29, 104]);
+    expect(chunks).toStrictEqual([2, 2]);
     // Chunk dimensions array length should match file dimensions
     const dims = reader.getDimensions();
     expect(chunks.length).toBe(dims.length);
@@ -111,7 +111,7 @@ describe("OmFileReader", () => {
     const scaleFactor = reader.scaleFactor();
     const addOffset = reader.addOffset();
 
-    expect(scaleFactor).toBe(20);
+    expect(scaleFactor).toBe(1);
     expect(addOffset).toBe(0);
   });
 
@@ -127,30 +127,16 @@ describe("OmFileReader", () => {
     await reader.initialize();
 
     const dimReadRange: Range[] = [
-      { start: BigInt(0), end: BigInt(10) },
-      { start: BigInt(0), end: BigInt(10) },
-      { start: BigInt(0), end: BigInt(10) },
+      { start: BigInt(0), end: BigInt(2) },
+      { start: BigInt(0), end: BigInt(2) },
     ];
 
     const output = await reader.read(wasm.DATA_TYPE_FLOAT_ARRAY, dimReadRange);
     expect(output).toBeInstanceOf(Float32Array);
 
-    console.log("Output data:", output.slice(0, 10));
+    console.log("Output data:", output);
 
-    expect(Array.from(output.slice(0, 10))).toEqual(
-      expect.arrayContaining([
-        expect.closeTo(-24.25, 0.001),
-        expect.closeTo(-24.75, 0.001),
-        expect.closeTo(-23.85, 0.001),
-        expect.closeTo(-23.95, 0.001),
-        expect.closeTo(-25.45, 0.001),
-        expect.closeTo(-25.9, 0.001),
-        expect.closeTo(-26.4, 0.001),
-        expect.closeTo(-26.45, 0.001),
-        expect.closeTo(-26.2, 0.001),
-        expect.closeTo(-26.2, 0.001),
-      ])
-    );
+    expect(output).toStrictEqual(new Float32Array([0, 1, 5, 6]));
   });
 
   // it("should successfully readInto data", async () => {
