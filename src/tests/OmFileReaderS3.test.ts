@@ -3,6 +3,7 @@ import { S3Backend } from "../lib/backends/S3Backend";
 import { OmFileReader } from "../lib/OmFileReader";
 import { initWasm } from "../lib/wasm";
 import { OmDataType } from "../lib/types";
+import { expectFloatArrayToBeClose } from "./utils";
 
 describe("S3Backend", () => {
   // This test needs network access to S3, so mark it as slow
@@ -27,24 +28,16 @@ describe("S3Backend", () => {
         { start: 0, end: 100 },
       ];
 
-      // Read the data - assuming it's a float array (temperature data)
+      // Read the data: it is a float array (temperature data)
       const data = await reader.read(OmDataType.FloatArray, ranges);
 
-      // Expected data from the Python test
-      const expected = [18.0, 17.7, 17.65, 17.45, 17.15, 17.6, 18.7, 20.75, 21.7, 22.65];
-
-      // Check first 10 values to match expected with small tolerance for floating point differences
-      const tolerance = 0.001;
-      const actual = Array.from(data.slice(0, 10));
-
-      // Log values for debugging
-      console.log("Expected:", expected);
-      console.log("Actual:", actual);
-
-      // Check each value with tolerance
-      for (let i = 0; i < expected.length; i++) {
-        expect(actual[i]).toBeCloseTo(expected[i], 2); // 2 decimal places tolerance
-      }
+      // Use our helper function to verify the results
+      expectFloatArrayToBeClose(
+        data.slice(0, 10), // Only check the first few values
+        [18.0, 17.7, 17.65, 17.45, 17.15, 17.6, 18.7, 20.75, 21.7, 22.65], // Expected data in the remote file
+        0.01, // 2 decimal places tolerance
+        "Temperature values should match reference data"
+      );
     } finally {
       // Clean up resources
       reader.dispose();

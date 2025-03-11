@@ -2,15 +2,6 @@
 EMCC = emcc
 
 EXPORTED_FUNCS = '[\
-    "_P4NCompressor_compress",\
-    "_P4NCompressor_decompress",\
-    "_P4NCompressor_create",\
-    "_P4NCompressor_get_compressed_data",\
-    "_test_p4nzdec128v16",\
-    "_main",\
-    "_create_reader_from_js",\
-    "_decode_with_reader",\
-    "_destroy_reader",\
     "_om_header_size",\
 	"_om_header_type",\
 	"_om_trailer_size",\
