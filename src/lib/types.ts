@@ -9,8 +9,17 @@ export interface OffsetSize {
 }
 
 export enum CompressionType {
-  None = 0,
-  P4NZEnc128v16 = 1,
+  /// Lossy compression using 2D delta coding and scale-factor.
+  /// Only supports float and scales to 16-bit signed integer.
+  PforDelta2dInt16 = 0,
+  /// Lossless float/double compression using 2D xor coding.
+  FpxXor2d = 1,
+  /// PFor integer compression.
+  /// f32 values are scaled to u32, f64 are scaled to u64.
+  PforDelta2d = 2,
+  /// Similar to `PforDelta2dInt16` but applies `log10(1+x)` before.
+  PforDelta2dInt16Logarithmic = 3,
+  None = 4,
 }
 
 export enum OmDataType {

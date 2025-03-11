@@ -1,20 +1,19 @@
 import { describe, beforeAll, afterEach, it, expect, beforeEach } from "vitest";
-import { getWasmModule, initWasm } from "../lib/wasm";
+import { getWasmModule, initWasm, WasmModule } from "../lib/wasm";
 import { OmFileReader } from "../lib/OmFileReader";
 import fs from "fs/promises";
 import path from "path";
-import { OmDataType, Range } from "../lib/types";
+import { CompressionType, OmDataType, Range } from "../lib/types";
 import { FileBackend } from "../lib/backends/FileBackend";
 
 describe("OmFileReader", () => {
   let testFileData: ArrayBuffer;
   let reader: OmFileReader;
-  let wasm: any; // The WASM module
+  let wasm: WasmModule;
 
   // Initialize WASM and load test file before all tests
   beforeAll(async () => {
     wasm = await initWasm();
-    console.log("WASM module initialized");
 
     // Load the test file
     // Currently this file is not committed to the repository
@@ -39,12 +38,12 @@ describe("OmFileReader", () => {
     await expect(reader.initialize()).resolves.not.toThrow();
   });
 
-  // it("should fail to initialize reader with invalid data", async () => {
-  //   const invalidBackend = new TestBackend(new ArrayBuffer(10)); // Too small to be valid
-  //   const invalidReader = new OmFileReader(invalidBackend, wasm);
+  it("should fail to initialize reader with invalid data", async () => {
+    const invalidBackend = new FileBackend(new ArrayBuffer(10)); // Too small to be valid
+    const invalidReader = new OmFileReader(invalidBackend, wasm);
 
-  //   await expect(invalidReader.initialize()).rejects.toThrow();
-  // });
+    await expect(invalidReader.initialize()).rejects.toThrow();
+  });
 
   // Test getting name - this exercises the string handling
   it("should get the variable name if available", async () => {
@@ -81,7 +80,7 @@ describe("OmFileReader", () => {
     const compression = reader.compression();
 
     expect(dataType).toBe(OmDataType.FloatArray);
-    expect(compression).toBe(0); // PforDelta2dInt16
+    expect(compression).toBe(CompressionType.PforDelta2dInt16);
   });
 
   // Test scale factor and add offset
@@ -118,89 +117,58 @@ describe("OmFileReader", () => {
     expect(output).toStrictEqual(new Float32Array([0, 1, 5, 6]));
   });
 
-  // it("should successfully readInto data", async () => {
-  //   await reader.initialize();
+  it("should successfully readInto data", async () => {
+    await reader.initialize();
 
-  //   // Adjust these values according to your test file's dimensions
-  //   const outputSize = 1000; // Adjust based on your test data
-  //   const output = new Float32Array(outputSize);
-  //   const dimReadRange: Range[] = [
-  //     { start: 0, end: 10 },
-  //     { start: 0, end: 10 },
-  //     { start: 0, end: 10 },
-  //   ];
+    const outputSize = 4;
+    const output = new Float32Array(outputSize);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 2 },
+      { start: 0, end: 2 },
+    ];
 
-  //   await expect(reader.readInto(wasm.DATA_TYPE_FLOAT32, output, dimReadRange)).resolves.not.toThrow();
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).resolves.not.toThrow();
 
-  //   expect(Array.from(output.slice(0, 10))).toEqual(
-  //     expect.arrayContaining([
-  //       expect.closeTo(-24.25, 0.001),
-  //       expect.closeTo(-24.75, 0.001),
-  //       expect.closeTo(-23.85, 0.001),
-  //       expect.closeTo(-23.95, 0.001),
-  //       expect.closeTo(-25.45, 0.001),
-  //       expect.closeTo(-25.9, 0.001),
-  //       expect.closeTo(-26.4, 0.001),
-  //       expect.closeTo(-26.45, 0.001),
-  //       expect.closeTo(-26.2, 0.001),
-  //       expect.closeTo(-26.2, 0.001),
-  //     ])
-  //   );
-  // });
+    expect(output).toStrictEqual(new Float32Array([0, 1, 5, 6]));
+  });
 
-  // it("should fail with invalid dimensions", async () => {
-  //   await reader.initialize();
+  it("should fail with invalid dimensions", async () => {
+    await reader.initialize();
 
-  //   const output = new Float32Array(1000);
-  //   const dimReadRange: Range[] = [
-  //     { start: 0, end: 10 }, // Wrong number of dimensions
-  //   ];
+    const output = new Float32Array(125);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+    ]; // Wrong number of dimensions
 
-  //   await expect(reader.readInto(wasm.DATA_TYPE_FLOAT32, output, dimReadRange)).rejects.toThrow();
-  // });
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).rejects.toThrow();
+  });
 
-  // it("should handle out-of-bounds reads", async () => {
-  //   await reader.initialize();
+  it("should handle out-of-bounds reads", async () => {
+    await reader.initialize();
 
-  //   const output = new Float32Array(10); // Too small for the data
-  //   const dimReadRange: Range[] = [
-  //     { start: 0, end: 100 },
-  //     { start: 0, end: 100 },
-  //     { start: 0, end: 100 },
-  //   ]; // This would require a much larger buffer
+    const output = new Float32Array(10000);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 100 },
+      { start: 0, end: 100 },
+    ]; // This exceeds the dimensions of the test file
 
-  //   await expect(reader.readInto(wasm.DATA_TYPE_FLOAT32, output, dimReadRange)).rejects.toThrow();
-  // });
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).rejects.toThrow();
+  });
 
-  // it("should properly clean up resources", async () => {
-  //   await reader.initialize();
-  //   reader.dispose();
+  it("should properly clean up resources", async () => {
+    await reader.initialize();
+    reader.dispose();
 
-  //   // Attempting to use the reader after disposal should throw
-  //   const dimReadRange: Range[] = [
-  //     { start: 0, end: 10 },
-  //     { start: 0, end: 10 },
-  //     { start: 0, end: 10 },
-  //   ];
+    // Attempting to use the reader after disposal should throw
+    const dimReadRange: Range[] = [
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+    ];
 
-  //   await expect(reader.read(wasm.DATA_TYPE_FLOAT32, dimReadRange)).rejects.toThrow();
-  // });
-
-  // // Test getting dimensions
-  // it("should correctly report dimensions", async () => {
-  //   await reader.initialize();
-  //   const dimensions = reader.getDimensions();
-  //   expect(dimensions).to.be.an("array");
-  //   expect(dimensions.length).to.be.greaterThan(0);
-  // });
-
-  // // Test getting chunks
-  // it("should correctly report chunk dimensions", async () => {
-  //   await reader.initialize();
-  //   const chunks = reader.getChunkDimensions();
-  //   expect(chunks).to.be.an("array");
-  //   expect(chunks.length).to.be.greaterThan(0);
-  // });
+    await expect(reader.read(wasm.DATA_TYPE_FLOAT_ARRAY, dimReadRange)).rejects.toThrow();
+  });
 
   // // Test getting children if applicable
   // it("should handle children correctly", async () => {
