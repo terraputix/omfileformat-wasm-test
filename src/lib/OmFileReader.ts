@@ -1,53 +1,6 @@
-import { OmFileReaderBackend } from "./backend";
+import { OmFileReaderBackend } from "./backends/OmFileReaderBackend";
+import { OffsetSize, OmDataType, TypedArray, Range } from "./types";
 import { WasmModule, initWasm, getWasmModule } from "./wasm";
-
-// TypedArray type for TypeScript
-type TypedArray =
-  | Int8Array
-  | Uint8Array
-  | Int16Array
-  | Uint16Array
-  | Int32Array
-  | Uint32Array
-  | Float32Array
-  | Float64Array;
-
-// Define enums to match Rust enum types
-export enum DataType {
-  None = 0,
-  Int8 = 1,
-  Uint8 = 2,
-  Int16 = 3,
-  Uint16 = 4,
-  Int32 = 5,
-  Uint32 = 6,
-  Int64 = 7,
-  Uint64 = 8,
-  Float = 9,
-  Double = 10,
-  String = 11,
-  Int8Array = 12,
-  Uint8Array = 13,
-  Int16Array = 14,
-  Uint16Array = 15,
-  Int32Array = 16,
-  Uint32Array = 17,
-  Int64Array = 18,
-  Uint64Array = 19,
-  FloatArray = 20,
-  DoubleArray = 21,
-  StringArray = 22,
-}
-
-export interface Range {
-  start: bigint;
-  end: bigint;
-}
-
-export interface OffsetSize {
-  offset: number;
-  size: number;
-}
 
 export class OmFileReader {
   private backend: OmFileReaderBackend;
@@ -269,7 +222,7 @@ export class OmFileReader {
   }
 
   // Method to read scalar values
-  readScalar<T>(dataType: DataType): T | null {
+  readScalar<T>(dataType: OmDataType): T | null {
     if (this.variable === null) throw new Error("Reader not initialized");
 
     if (this.dataType() !== dataType) {
@@ -298,28 +251,28 @@ export class OmFileReader {
       let result: any;
 
       switch (dataType) {
-        case DataType.Int8:
+        case OmDataType.Int8:
           result = this.wasm.getValue(dataPtr, "i8");
           break;
-        case DataType.Uint8:
+        case OmDataType.Uint8:
           result = this.wasm.getValue(dataPtr, "i8") & 0xff;
           break;
-        case DataType.Int16:
+        case OmDataType.Int16:
           result = this.wasm.getValue(dataPtr, "i16");
           break;
-        case DataType.Uint16:
+        case OmDataType.Uint16:
           result = this.wasm.getValue(dataPtr, "i16") & 0xffff;
           break;
-        case DataType.Int32:
+        case OmDataType.Int32:
           result = this.wasm.getValue(dataPtr, "i32");
           break;
-        case DataType.Uint32:
+        case OmDataType.Uint32:
           result = this.wasm.getValue(dataPtr, "i32") >>> 0;
           break;
-        case DataType.Float:
+        case OmDataType.Float:
           result = this.wasm.getValue(dataPtr, "float");
           break;
-        case DataType.Double:
+        case OmDataType.Double:
           result = this.wasm.getValue(dataPtr, "double");
           break;
         default:
@@ -511,7 +464,7 @@ export class OmFileReader {
   }
 
   async read(
-    dataType: DataType,
+    dataType: OmDataType,
     dimRanges: Range[],
     ioSizeMax: bigint = BigInt(65536),
     ioSizeMerge: bigint = BigInt(512)
@@ -572,7 +525,7 @@ export class OmFileReader {
    * @param ioSizeMerge Merge threshold for I/O operations (default: 512)
    */
   async readInto(
-    dataType: DataType,
+    dataType: OmDataType,
     output: TypedArray,
     dimRanges: Range[],
     ioSizeMax: bigint = BigInt(65536),

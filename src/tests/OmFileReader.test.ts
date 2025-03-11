@@ -1,9 +1,10 @@
 import { describe, beforeAll, afterEach, it, expect, beforeEach } from "vitest";
 import { getWasmModule, initWasm } from "../lib/wasm";
-import { DataType, OmFileReader, Range } from "../lib/OmFileReader";
-import { OmFileReaderBackend } from "../lib/backend";
+import { OmFileReader } from "../lib/OmFileReader";
+import { OmFileReaderBackend } from "../lib/backends/OmFileReaderBackend";
 import fs from "fs/promises";
 import path from "path";
+import { OmDataType, Range } from "../lib/types";
 
 // Define a test backend implementation that works with ArrayBuffer
 class TestBackend implements OmFileReaderBackend {
@@ -101,7 +102,7 @@ describe("OmFileReader", () => {
     const dataType = reader.dataType();
     const compression = reader.compression();
 
-    expect(dataType).toBe(DataType.FloatArray);
+    expect(dataType).toBe(OmDataType.FloatArray);
     expect(compression).toBe(0); // PforDelta2dInt16
   });
 
@@ -127,8 +128,8 @@ describe("OmFileReader", () => {
     await reader.initialize();
 
     const dimReadRange: Range[] = [
-      { start: BigInt(0), end: BigInt(2) },
-      { start: BigInt(0), end: BigInt(2) },
+      { start: 0, end: 2 },
+      { start: 0, end: 2 },
     ];
 
     const output = await reader.read(wasm.DATA_TYPE_FLOAT_ARRAY, dimReadRange);

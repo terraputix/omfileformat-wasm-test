@@ -1,17 +1,4 @@
-// OmFileReaderBackend.ts
-export interface OmFileReaderBackend {
-  /**
-   * Get bytes from the backend at the specified offset and size
-   * @param offset The offset in bytes from the start of the file
-   * @param size The number of bytes to read
-   */
-  getBytes(offset: number, size: number): Promise<Uint8Array>;
-
-  /**
-   * Get the total size of the file in bytes
-   */
-  count(): Promise<number>;
-}
+import { OmFileReaderBackend } from "./OmFileReaderBackend";
 
 export class FetchBackend implements OmFileReaderBackend {
   private url: string;
