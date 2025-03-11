@@ -1,180 +1,703 @@
-import { createArray, DataTypeToArray, OmDataType, TypedArray, ValidDataTypes } from "./types";
-import { getWasmModule } from "./wasm";
+import { OmFileReaderBackend } from "./backend";
+import { WasmModule, initWasm, getWasmModule } from "./wasm";
+
+// TypedArray type for TypeScript
+type TypedArray =
+  | Int8Array
+  | Uint8Array
+  | Int16Array
+  | Uint16Array
+  | Int32Array
+  | Uint32Array
+  | Float32Array
+  | Float64Array;
+
+// Define enums to match Rust enum types
+export enum DataType {
+  None = 0,
+  Int8 = 1,
+  Uint8 = 2,
+  Int16 = 3,
+  Uint16 = 4,
+  Int32 = 5,
+  Uint32 = 6,
+  Int64 = 7,
+  Uint64 = 8,
+  Float = 9,
+  Double = 10,
+  String = 11,
+  Int8Array = 12,
+  Uint8Array = 13,
+  Int16Array = 14,
+  Uint16Array = 15,
+  Int32Array = 16,
+  Uint32Array = 17,
+  Int64Array = 18,
+  Uint64Array = 19,
+  FloatArray = 20,
+  DoubleArray = 21,
+  StringArray = 22,
+}
+
+export interface Range {
+  start: bigint;
+  end: bigint;
+}
+
+export interface OffsetSize {
+  offset: number;
+  size: number;
+}
 
 export class OmFileReader {
-  private reader: number = 0;
+  private backend: OmFileReaderBackend;
+  private wasm: WasmModule;
+  private variable: number | null;
+  private variableData: Uint8Array | null;
+  private variableDataPtr: number | null;
+  private offsetSize: OffsetSize | null;
 
-  /// Callbacks are passed to the WASM module and stored in a map.
-  /// We only need one callback for now, so we use a constant ID.
-  private static readonly CALLBACK_ID = 1;
-  /// the getBytes callback that is passed to the WASM module
-  private getBytes: ((offset: bigint, count: bigint) => Uint8Array) | null = null;
-
-  public async createReader(
-    getBytesCallback: (offset: bigint, count: bigint) => Uint8Array,
-    totalSize: number
-  ): Promise<void> {
-    const module = getWasmModule();
-
-    // Store the callback
-    this.getBytes = getBytesCallback;
-
-    // Register callback in Module
-    if (!module.callbacks) {
-      module.callbacks = {};
-    }
-
-    module.callbacks[OmFileReader.CALLBACK_ID] = (offset: bigint, count: bigint) => {
-      if (!this.getBytes) throw new Error("Callback not initialized");
-      return this.getBytes(offset, count);
-    };
-
-    // Create the reader
-    this.reader = module._create_reader_from_js(OmFileReader.CALLBACK_ID, totalSize);
-    if (this.reader === 0) {
-      throw new Error("Failed to create reader");
-    }
+  constructor(backend: OmFileReaderBackend, wasm?: WasmModule) {
+    this.backend = backend;
+    this.wasm = wasm || getWasmModule();
+    this.variable = null;
+    this.variableData = null;
+    this.variableDataPtr = null;
+    this.offsetSize = null;
   }
 
-  public readInto<T extends TypedArray>(
-    output: T,
-    dataType: OmDataType,
-    dimReadStart: BigInt64Array,
-    dimReadEnd: BigInt64Array,
-    intoCubeOffset: BigInt64Array,
-    intoCubeDimension: BigInt64Array,
-    ioSizeMax: BigInt = BigInt(65536),
-    ioSizeMerge: BigInt = BigInt(512)
-  ): void {
-    // Check if reader is initialized
-    if (this.reader === 0) {
-      throw new Error("Reader not initialized");
+  /**
+   * Static factory method to create and initialize an OmFileReader
+   */
+  static async create(backend: OmFileReaderBackend): Promise<OmFileReader> {
+    // Make sure WASM is initialized
+    const wasm = await initWasm();
+    const reader = new OmFileReader(backend, wasm);
+    await reader.initialize();
+    return reader;
+  }
+
+  async initialize(): Promise<OmFileReader> {
+    // Similar to the 'new' method in Rust
+    const headerSize = this.wasm.om_header_size();
+    const headerData = await this.backend.getBytes(0, headerSize);
+
+    // Create a pointer to the header data in WASM memory
+    const headerPtr = this.wasm._malloc(headerData.length);
+    this.wasm.HEAPU8.set(headerData, headerPtr);
+
+    const headerType = this.wasm.om_header_type(headerPtr);
+
+    if (headerType === this.wasm.OM_HEADER_INVALID) {
+      this.wasm._free(headerPtr);
+      throw new Error("Not a valid OM file");
     }
 
-    // Check that output array is large enough
-    const totalSize = dimReadEnd.reduce((acc, end, i) => {
-      return acc * (end - dimReadStart[i]);
-    }, 1n);
+    let variableData: Uint8Array;
 
-    if (totalSize > BigInt(output.length)) {
-      throw new Error("Output array too small");
+    if (headerType === this.wasm.OM_HEADER_LEGACY) {
+      variableData = headerData;
+      this.offsetSize = null;
+    } else if (headerType === this.wasm.OM_HEADER_READ_TRAILER) {
+      const fileSize = await this.backend.count();
+      const trailerSize = this.wasm.om_trailer_size();
+      const trailerOffset = fileSize - trailerSize;
+
+      const trailerData = await this.backend.getBytes(trailerOffset, trailerSize);
+      const trailerPtr = this.wasm._malloc(trailerData.length);
+      this.wasm.HEAPU8.set(trailerData, trailerPtr);
+
+      // Create pointers for offset and size (out parameters)
+      const offsetPtr = this.wasm._malloc(8); // 64-bit value = 8 bytes
+      const sizePtr = this.wasm._malloc(8);
+
+      const success = this.wasm.om_trailer_read(trailerPtr, offsetPtr, sizePtr);
+
+      if (!success) {
+        this.wasm._free(headerPtr);
+        this.wasm._free(trailerPtr);
+        this.wasm._free(offsetPtr);
+        this.wasm._free(sizePtr);
+        throw new Error("Failed to read trailer");
+      }
+
+      // Read values from memory
+      const offset = Number(this.wasm.getValue(offsetPtr, "i64"));
+      const size = Number(this.wasm.getValue(sizePtr, "i64"));
+
+      this.offsetSize = { offset, size };
+
+      // Free memory
+      this.wasm._free(trailerPtr);
+      this.wasm._free(offsetPtr);
+      this.wasm._free(sizePtr);
+
+      // Get variable data
+      variableData = await this.backend.getBytes(offset, size);
+    } else {
+      this.wasm._free(headerPtr);
+      throw new Error("Unknown header type");
     }
 
-    // TODO: Check data type compatibility with output array
+    // Initialize variable
+    const variableDataPtr = this.wasm._malloc(variableData.length);
+    this.wasm.HEAPU8.set(variableData, variableDataPtr);
+    this.variable = this.wasm.om_variable_init(variableDataPtr);
 
-    const module = getWasmModule();
-    // Convert TypedArray to raw bytes
-    const outputBytes = new Uint8Array(output.buffer);
-    // Create output buffer in WASM memory
-    const outputPtr = module._malloc(outputBytes.length);
-    if (outputPtr === 0) {
-      throw new Error("Failed to allocate memory for output");
+    // Store the variable data to prevent GC
+    this.variableData = variableData;
+    this.variableDataPtr = variableDataPtr;
+
+    this.wasm._free(headerPtr);
+
+    return this;
+  }
+
+  // Helper method to convert C strings to JS strings
+  private _getString(strPtr: number, strLen: number): string {
+    const bytes = this.wasm.HEAPU8.subarray(strPtr, strPtr + strLen);
+    return new TextDecoder("utf8").decode(bytes);
+  }
+
+  dataType(): number {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    return this.wasm.om_variable_get_type(this.variable);
+  }
+
+  compression(): number {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    return this.wasm.om_variable_get_compression(this.variable);
+  }
+
+  scaleFactor(): number {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    return this.wasm.om_variable_get_scale_factor(this.variable);
+  }
+
+  addOffset(): number {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    return this.wasm.om_variable_get_add_offset(this.variable);
+  }
+
+  getDimensions(): number[] {
+    if (this.variable === null) throw new Error("Reader not initialized");
+
+    // Get count using the wrapper function
+    const count = Number(this.wasm.om_variable_get_dimension_count(this.variable));
+
+    // Get each dimension individually
+    const dimensions: number[] = [];
+    for (let i = 0; i < count; i++) {
+      dimensions.push(Number(this.wasm.om_variable_get_dimension_value(this.variable, BigInt(i))));
     }
 
-    // Allocate memory for arrays
-    const dimCount = dimReadStart.length;
+    return dimensions;
+  }
 
-    // Allocate memory for arrays with proper alignment
-    const startPtr = module._malloc(dimCount * 8);
-    const endPtr = module._malloc(dimCount * 8);
-    const offsetPtr = module._malloc(dimCount * 8);
-    const dimensionPtr = module._malloc(dimCount * 8);
+  getChunkDimensions(): number[] {
+    if (this.variable === null) throw new Error("Reader not initialized");
 
-    // Verify memory alignment for 64-bit values
-    if (startPtr % 8 !== 0 || endPtr % 8 !== 0 || offsetPtr % 8 !== 0 || dimensionPtr % 8 !== 0) {
-      throw new Error("Memory not properly aligned for 64-bit values");
+    // Get count using the wrapper function
+    const count = Number(this.wasm.om_variable_get_chunk_count(this.variable));
+
+    // Get each chunk dimension individually
+    const chunks: number[] = [];
+    for (let i = 0; i < count; i++) {
+      chunks.push(Number(this.wasm.om_variable_get_chunk_value(this.variable, BigInt(i))));
     }
 
-    // Create separate views for each memory region
-    const startView = new BigInt64Array(module.HEAPU8.buffer, startPtr, dimCount);
-    const endView = new BigInt64Array(module.HEAPU8.buffer, endPtr, dimCount);
-    const offsetView = new BigInt64Array(module.HEAPU8.buffer, offsetPtr, dimCount);
-    const dimensionView = new BigInt64Array(module.HEAPU8.buffer, dimensionPtr, dimCount);
+    return chunks;
+  }
 
-    // Copy arrays to their respective memory regions
-    startView.set(dimReadStart);
-    endView.set(dimReadEnd);
-    offsetView.set(intoCubeOffset);
-    dimensionView.set(intoCubeDimension);
+  getName(): string | null {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    const nameStruct = this.wasm.om_variable_get_name(this.variable);
+    const size = this.wasm.HEAPU32[nameStruct / 4]; // name.size
+
+    if (size === 0) {
+      return null;
+    }
+
+    const valuePtr = this.wasm.getValue(nameStruct + 4, "*"); // name.value
+    return this._getString(valuePtr, size);
+  }
+
+  numberOfChildren(): number {
+    if (this.variable === null) throw new Error("Reader not initialized");
+    return this.wasm.om_variable_get_children_count(this.variable);
+  }
+
+  async getChild(index: number): Promise<OmFileReader | null> {
+    if (this.variable === null) throw new Error("Reader not initialized");
+
+    // Allocate memory for the output parameters
+    const offsetPtr = this.wasm._malloc(8);
+    const sizePtr = this.wasm._malloc(8);
+
+    const success = this.wasm.om_variable_get_children(this.variable, index, 1, offsetPtr, sizePtr);
+
+    if (!success) {
+      this.wasm._free(offsetPtr);
+      this.wasm._free(sizePtr);
+      return null;
+    }
+
+    const offset = Number(this.wasm.getValue(offsetPtr, "i64"));
+    const size = Number(this.wasm.getValue(sizePtr, "i64"));
+
+    this.wasm._free(offsetPtr);
+    this.wasm._free(sizePtr);
+
+    return this.initChildFromOffsetSize({ offset, size });
+  }
+
+  async initChildFromOffsetSize(offsetSize: OffsetSize): Promise<OmFileReader> {
+    const childData = await this.backend.getBytes(offsetSize.offset, offsetSize.size);
+
+    const childReader = new OmFileReader(this.backend, this.wasm);
+
+    // Initialize variable data
+    const childDataPtr = this.wasm._malloc(childData.length);
+    this.wasm.HEAPU8.set(childData, childDataPtr);
+
+    childReader.variable = this.wasm.om_variable_init(childDataPtr);
+    childReader.variableData = childData;
+    childReader.variableDataPtr = childDataPtr;
+    childReader.offsetSize = offsetSize;
+
+    return childReader;
+  }
+
+  // Method to read scalar values
+  readScalar<T>(dataType: DataType): T | null {
+    if (this.variable === null) throw new Error("Reader not initialized");
+
+    if (this.dataType() !== dataType) {
+      return null;
+    }
+
+    // Allocate memory for output parameters
+    const ptrPtr = this.wasm._malloc(4); // pointer to pointer
+    const sizePtr = this.wasm._malloc(8); // u64
 
     try {
-      const result = module._decode_with_reader(
-        this.reader,
-        outputPtr,
-        output.length,
-        dataType,
-        startPtr,
-        endPtr,
-        offsetPtr,
-        dimensionPtr,
-        BigInt(dimCount),
-        ioSizeMax,
-        ioSizeMerge
-      );
+      const error = this.wasm.om_variable_get_scalar(this.variable, ptrPtr, sizePtr);
 
-      // Copy result back to output array
-      // OM_FILE_ERROR_OK
-      if (result === 0) {
-        const outputView = new Uint8Array(module.HEAPU8.buffer, outputPtr, output.length);
-        outputBytes.set(outputView);
-      } else {
-        throw new Error("Error decoding data. Error code: " + result);
+      if (error !== this.wasm.ERROR_OK) {
+        return null;
       }
+
+      const dataPtr = this.wasm.getValue(ptrPtr, "*");
+      const size = Number(this.wasm.getValue(sizePtr, "i64"));
+
+      if (dataPtr === 0) {
+        return null;
+      }
+
+      // Read data based on type
+      let result: any;
+
+      switch (dataType) {
+        case DataType.Int8:
+          result = this.wasm.getValue(dataPtr, "i8");
+          break;
+        case DataType.Uint8:
+          result = this.wasm.getValue(dataPtr, "i8") & 0xff;
+          break;
+        case DataType.Int16:
+          result = this.wasm.getValue(dataPtr, "i16");
+          break;
+        case DataType.Uint16:
+          result = this.wasm.getValue(dataPtr, "i16") & 0xffff;
+          break;
+        case DataType.Int32:
+          result = this.wasm.getValue(dataPtr, "i32");
+          break;
+        case DataType.Uint32:
+          result = this.wasm.getValue(dataPtr, "i32") >>> 0;
+          break;
+        case DataType.Float:
+          result = this.wasm.getValue(dataPtr, "float");
+          break;
+        case DataType.Double:
+          result = this.wasm.getValue(dataPtr, "double");
+          break;
+        default:
+          result = null;
+      }
+
+      return result as T;
     } finally {
-      // Clean up allocated memory
-      module._free(startPtr);
-      module._free(endPtr);
-      module._free(offsetPtr);
-      module._free(dimensionPtr);
-      module._free(outputPtr);
+      this.wasm._free(ptrPtr);
+      this.wasm._free(sizePtr);
     }
   }
 
-  public read<T extends ValidDataTypes>(
-    dataType: T,
-    dimReadRanges: Array<{ start: bigint; end: bigint }>,
-    ioSizeMax: BigInt = BigInt(65536),
-    ioSizeMerge: BigInt = BigInt(512)
-  ): DataTypeToArray[T] {
-    // Calculate dimensions and total size
-    const outDims = dimReadRanges.map((range) => range.end - range.start);
-    const totalSize = outDims.reduce((acc, dim) => acc * dim, 1n);
+  private newIndexRead(decoderPtr: number): number {
+    // Calculate proper size for OmDecoder_indexRead_t
+    const sizeOfRange = 16; // 8 bytes for lowerBound + 8 bytes for upperBound
+    const sizeOfIndexRead = 8 + 8 + sizeOfRange * 3; // offset + count + 3 range structs
 
-    // Create arrays for the C function
-    const dimCount = dimReadRanges.length;
-    const dimReadStart = new BigInt64Array(dimReadRanges.map((r) => r.start));
-    const dimReadEnd = new BigInt64Array(dimReadRanges.map((r) => r.end));
-    const intoCubeOffset = new BigInt64Array(dimCount); // Zeros
-    const intoCubeDimension = new BigInt64Array(outDims);
+    // Allocate and zero the memory
+    const indexReadPtr = this.wasm._malloc(sizeOfIndexRead);
 
-    let output = createArray(dataType, Number(totalSize)) as DataTypeToArray[T];
+    // Zero out the memory (equivalent to std::mem::zeroed())
+    const zeroBuffer = new Uint8Array(sizeOfIndexRead);
+    this.wasm.HEAPU8.set(zeroBuffer, indexReadPtr);
 
-    // Use readInto to fill the array
-    this.readInto(
-      output,
-      dataType,
-      dimReadStart,
-      dimReadEnd,
-      intoCubeOffset,
-      intoCubeDimension,
-      ioSizeMax,
-      ioSizeMerge
-    );
+    // Initialize the structure using C function
+    this.wasm.om_decoder_init_index_read(decoderPtr, indexReadPtr);
 
+    return indexReadPtr;
+  }
+
+  private newDataRead(indexReadPtr: number): number {
+    // Size of OmDecoder_dataRead_t
+    const sizeOfRange = 16; // 8 bytes for lowerBound + 8 bytes for upperBound
+    const sizeOfDataRead = 8 + 8 + sizeOfRange * 3; // offset + count + 3 range structs
+
+    // Allocate and zero the memory
+    const dataReadPtr = this.wasm._malloc(sizeOfDataRead);
+
+    // Zero out the memory (equivalent to std::mem::zeroed())
+    const zeroBuffer = new Uint8Array(sizeOfDataRead);
+    this.wasm.HEAPU8.set(zeroBuffer, dataReadPtr);
+
+    // Initialize the structure using C function
+    this.wasm.om_decoder_init_data_read(dataReadPtr, indexReadPtr);
+
+    return dataReadPtr;
+  }
+
+  private async decode(decoderPtr: number, outputArray: TypedArray): Promise<void> {
+    console.log(`Starting decode with ${outputArray.constructor.name}, length=${outputArray.length}`);
+
+    const outputPtr = this.wasm._malloc(outputArray.byteLength);
+    const chunkBufferSize = Number(this.wasm.om_decoder_read_buffer_size(decoderPtr));
+    const chunkBufferPtr = this.wasm._malloc(chunkBufferSize);
+    // Create index_read struct
+    const indexReadPtr = this.newIndexRead(decoderPtr);
+    const errorPtr = this.wasm._malloc(4);
+    // Initialize error to OK
+    this.wasm.setValue(errorPtr, this.wasm.ERROR_OK, "i32");
+
+    try {
+      // Loop over index blocks
+      let indexBlockCount = 0;
+      while (this.wasm.om_decoder_next_index_read(decoderPtr, indexReadPtr)) {
+        indexBlockCount++;
+
+        // Get index_read parameters
+        const indexOffset = Number(this.wasm.getValue(indexReadPtr, "i64"));
+        const indexCount = Number(this.wasm.getValue(indexReadPtr + 8, "i64"));
+
+        console.log(`Index block #${indexBlockCount}: offset=${indexOffset}, count=${indexCount}`);
+
+        // Get bytes for index-read
+        const indexData = await this.backend.getBytes(indexOffset, indexCount);
+        const indexDataPtr = this.wasm._malloc(indexData.length);
+        this.wasm.HEAPU8.set(indexData, indexDataPtr);
+
+        // Create data_read struct
+        let dataReadPtr = this.newDataRead(indexReadPtr);
+
+        try {
+          // Loop over data blocks and read compressed data chunks
+          // Loop over data blocks
+          let dataBlockCount = 0;
+          while (
+            this.wasm.om_decoder_next_data_read(decoderPtr, dataReadPtr, indexDataPtr, BigInt(indexCount), errorPtr)
+          ) {
+            dataBlockCount++;
+
+            // Get data_read parameters
+            const dataOffset = Number(this.wasm.getValue(dataReadPtr, "i64"));
+            const dataCount = Number(this.wasm.getValue(dataReadPtr + 8, "i64"));
+            const chunkIndexPtr = dataReadPtr + 32; // offset(8), count(8), indexRange(16)
+            console.log(
+              `  Data block #${dataBlockCount}: offset=${dataOffset}, count=${dataCount}, chunkIndexPtr=${chunkIndexPtr}`
+            );
+
+            // Get bytes for data-read
+            const dataBlock = await this.backend.getBytes(dataOffset, dataCount);
+            const dataBlockPtr = this.wasm._malloc(dataBlock.length);
+            this.wasm.HEAPU8.set(dataBlock, dataBlockPtr);
+
+            try {
+              // Decode chunks
+              const success = this.wasm.om_decoder_decode_chunks(
+                decoderPtr,
+                chunkIndexPtr,
+                dataBlockPtr,
+                BigInt(dataCount),
+                outputPtr,
+                chunkBufferPtr,
+                errorPtr
+              );
+
+              // Check for error
+              if (!success) {
+                const error = this.wasm.getValue(errorPtr, "i32");
+                throw new Error(`Decoder failed to decode chunks: error ${error}`);
+              }
+            } finally {
+              this.wasm._free(dataBlockPtr);
+            }
+          }
+
+          // Check for errors after data_read loop
+          const error = this.wasm.getValue(errorPtr, "i32");
+          if (error !== this.wasm.ERROR_OK) {
+            throw new Error(`Data read error: ${error}`);
+          }
+        } finally {
+          this.wasm._free(dataReadPtr);
+          this.wasm._free(indexDataPtr);
+        }
+      }
+
+      // Copy the data back to the output array with the correct type
+      this.copyToTypedArray(outputPtr, outputArray);
+    } finally {
+      this.wasm._free(errorPtr);
+      this.wasm._free(indexReadPtr);
+      this.wasm._free(chunkBufferPtr);
+      this.wasm._free(outputPtr);
+    }
+  }
+
+  /**
+   * Helper method to copy data from WASM memory to a TypedArray with the correct type
+   */
+  private copyToTypedArray(sourcePtr: number, targetArray: TypedArray): void {
+    switch (targetArray.constructor) {
+      case Float32Array:
+        const f32Array = new Float32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Float32Array).set(f32Array);
+        break;
+      case Float64Array:
+        const f64Array = new Float64Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Float64Array).set(f64Array);
+        break;
+      case Int8Array:
+        const i8Array = new Int8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int8Array).set(i8Array);
+        break;
+      case Uint8Array:
+        const u8Array = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint8Array).set(u8Array);
+        break;
+      case Int16Array:
+        const i16Array = new Int16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int16Array).set(i16Array);
+        break;
+      case Uint16Array:
+        const u16Array = new Uint16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint16Array).set(u16Array);
+        break;
+      case Int32Array:
+        const i32Array = new Int32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int32Array).set(i32Array);
+        break;
+      case Uint32Array:
+        const u32Array = new Uint32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint32Array).set(u32Array);
+        break;
+      default:
+        // Fallback to byte-by-byte copy
+        const byteArray = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.byteLength);
+        new Uint8Array(targetArray.buffer).set(byteArray);
+    }
+  }
+
+  async read(
+    dataType: DataType,
+    dimRanges: Range[],
+    ioSizeMax: bigint = BigInt(65536),
+    ioSizeMerge: bigint = BigInt(512)
+  ): Promise<TypedArray> {
+    if (this.variable === null) throw new Error("Reader not initialized");
+
+    if (this.dataType() !== dataType) {
+      console.log(this.dataType());
+      console.log(dataType);
+      throw new Error(`Invalid data type: expected ${this.dataType()}, got ${dataType}`);
+    }
+
+    // Calculate output dimensions
+    const outDims = dimRanges.map((range) => Number(range.end - range.start));
+    const totalSize = outDims.reduce((a, b) => a * b, 1);
+
+    // Create output TypedArray based on data type
+    let output: TypedArray;
+    switch (dataType) {
+      case this.wasm.DATA_TYPE_INT8_ARRAY:
+        output = new Int8Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_UINT8_ARRAY:
+        output = new Uint8Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_INT16_ARRAY:
+        output = new Int16Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_UINT16_ARRAY:
+        output = new Uint16Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_INT32_ARRAY:
+        output = new Int32Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_UINT32_ARRAY:
+        output = new Uint32Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_FLOAT_ARRAY:
+        output = new Float32Array(totalSize);
+        break;
+      case this.wasm.DATA_TYPE_DOUBLE_ARRAY:
+        output = new Float64Array(totalSize);
+        break;
+      default:
+        throw new Error("Unsupported data type");
+    }
+
+    await this.readInto(dataType, output, dimRanges, ioSizeMax, ioSizeMerge);
     return output;
   }
 
-  public destroy(): void {
-    if (this.reader !== 0) {
-      const module = getWasmModule();
-      module._destroy_reader(this.reader);
-      this.reader = 0;
+  /**
+   * Read data into an existing TypedArray with specified dimension ranges
+   * @param dataType The data type to read
+   * @param output The TypedArray to read data into
+   * @param dimRanges Ranges for each dimension to read
+   * @param ioSizeMax Maximum I/O size (default: 65536)
+   * @param ioSizeMerge Merge threshold for I/O operations (default: 512)
+   */
+  async readInto(
+    dataType: DataType,
+    output: TypedArray,
+    dimRanges: Range[],
+    ioSizeMax: bigint = BigInt(65536),
+    ioSizeMerge: bigint = BigInt(512)
+  ): Promise<void> {
+    if (this.variable === null) throw new Error("Reader not initialized");
 
-      // Clean up callbacks
-      if (module.callbacks) {
-        delete module.callbacks[OmFileReader.CALLBACK_ID];
-      }
-      this.getBytes = null;
+    if (this.dataType() !== dataType) {
+      throw new Error(`Invalid data type: expected ${this.dataType()}, got ${dataType}`);
     }
+
+    const nDims = dimRanges.length;
+    const fileDims = this.getDimensions();
+
+    // Validate dimension counts
+    if (fileDims.length !== nDims) {
+      console.log(fileDims);
+      console.log(nDims);
+
+      throw new Error(`Mismatched dimensions: file has ${fileDims.length}, request has ${nDims}`);
+    }
+
+    // Calculate output dimensions and prepare arrays for WASM
+    const outDims = dimRanges.map((range) => range.end - range.start);
+    const intoCubeOffset = new Array(nDims).fill(0);
+
+    // Calculate total elements to ensure output array has correct size
+    const totalElements = outDims.reduce((a, b) => a * Number(b), 1);
+    if (output.length < totalElements) {
+      throw new Error(`Output array is too small: needs ${totalElements} elements, has ${output.length}`);
+    }
+
+    // Allocate memory for arrays
+    const readOffsetPtr = this.wasm._malloc(nDims * 8); // u64 array
+    const readCountPtr = this.wasm._malloc(nDims * 8);
+    const intoCubeOffsetPtr = this.wasm._malloc(nDims * 8);
+    const intoCubeDimensionPtr = this.wasm._malloc(nDims * 8);
+
+    try {
+      // Fill arrays
+      for (let i = 0; i < nDims; i++) {
+        // Validate ranges
+        if (dimRanges[i].start < 0 || dimRanges[i].end > fileDims[i] || dimRanges[i].start >= dimRanges[i].end) {
+          throw new Error(`Invalid range for dimension ${i}: ${JSON.stringify(dimRanges[i])}`);
+        }
+
+        this.wasm.setValue(readOffsetPtr + i * 8, BigInt(dimRanges[i].start), "i64");
+        this.wasm.setValue(readCountPtr + i * 8, BigInt(outDims[i]), "i64");
+        this.wasm.setValue(intoCubeOffsetPtr + i * 8, BigInt(intoCubeOffset[i]), "i64");
+        this.wasm.setValue(intoCubeDimensionPtr + i * 8, BigInt(outDims[i]), "i64");
+      }
+
+      // Create decoder
+      const decoderPtr = this.wasm._malloc(this.wasm.sizeof_decoder);
+
+      try {
+        // Initialize decoder
+        const error = this.wasm.om_decoder_init(
+          decoderPtr,
+          this.variable,
+          BigInt(nDims),
+          readOffsetPtr,
+          readCountPtr,
+          intoCubeOffsetPtr,
+          intoCubeDimensionPtr,
+          ioSizeMerge,
+          ioSizeMax
+        );
+
+        if (error !== this.wasm.ERROR_OK) {
+          throw new Error(`Decoder initialization failed: error code ${error}`);
+        }
+
+        console.log("Starting decode");
+
+        // Use our updated decode method to read the data
+        await this.decode(decoderPtr, output);
+        console.log("Finished decode");
+      } finally {
+        this.wasm._free(decoderPtr);
+      }
+    } finally {
+      // Clean up input arrays
+      this.wasm._free(readOffsetPtr);
+      this.wasm._free(readCountPtr);
+      this.wasm._free(intoCubeOffsetPtr);
+      this.wasm._free(intoCubeDimensionPtr);
+    }
+  }
+
+  // Get all variable metadata in a flat structure
+  async getFlatVariableMetadata(): Promise<Record<string, OffsetSize>> {
+    const result: Record<string, OffsetSize> = {};
+    await this.collectVariableMetadata([], result);
+    return result;
+  }
+
+  // Helper method to recursively collect variable metadata
+  private async collectVariableMetadata(currentPath: string[], result: Record<string, OffsetSize>): Promise<void> {
+    // Add current variable's metadata if it has a name and offset_size
+    const name = this.getName();
+    if (name !== null && this.offsetSize !== null) {
+      const pathWithName = [...currentPath, name];
+      const pathStr = pathWithName.join("/");
+      result[pathStr] = this.offsetSize;
+    }
+
+    // Process children
+    const numChildren = this.numberOfChildren();
+    for (let i = 0; i < numChildren; i++) {
+      const child = await this.getChild(i);
+      if (child !== null) {
+        const childPath = name !== null ? [...currentPath, name] : currentPath;
+        await child.collectVariableMetadata(childPath, result);
+      }
+    }
+  }
+
+  // Clean up resources when done
+  dispose(): void {
+    if (this.variableDataPtr !== null) {
+      this.wasm._free(this.variableDataPtr);
+      this.variableDataPtr = null;
+    }
+    this.variable = null;
+    this.variableData = null;
   }
 }
