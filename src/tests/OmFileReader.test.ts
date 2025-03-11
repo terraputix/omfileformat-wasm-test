@@ -1,32 +1,10 @@
 import { describe, beforeAll, afterEach, it, expect, beforeEach } from "vitest";
 import { getWasmModule, initWasm } from "../lib/wasm";
 import { OmFileReader } from "../lib/OmFileReader";
-import { OmFileReaderBackend } from "../lib/backends/OmFileReaderBackend";
 import fs from "fs/promises";
 import path from "path";
 import { OmDataType, Range } from "../lib/types";
-
-// Define a test backend implementation that works with ArrayBuffer
-class TestBackend implements OmFileReaderBackend {
-  private data: ArrayBuffer;
-
-  constructor(data: ArrayBuffer) {
-    this.data = data;
-  }
-
-  async getBytes(offset: number, size: number): Promise<Uint8Array> {
-    // Add safety checks
-    if (offset < 0 || offset > this.data.byteLength || size < 0 || offset + size > this.data.byteLength) {
-      throw new Error(`Invalid range: offset=${offset}, size=${size}, buffer size=${this.data.byteLength}`);
-    }
-
-    return new Uint8Array(this.data.slice(offset, offset + size));
-  }
-
-  async count(): Promise<number> {
-    return this.data.byteLength;
-  }
-}
+import { FileBackend } from "../lib/backends/FileBackend";
 
 describe("OmFileReader", () => {
   let testFileData: ArrayBuffer;
@@ -47,7 +25,7 @@ describe("OmFileReader", () => {
   });
 
   beforeEach(() => {
-    const backend = new TestBackend(testFileData);
+    const backend = new FileBackend(testFileData);
     reader = new OmFileReader(backend, wasm);
   });
 
