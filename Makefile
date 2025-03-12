@@ -2,39 +2,58 @@
 EMCC = emcc
 
 EXPORTED_FUNCS = '[\
-    "_P4NCompressor_compress",\
-    "_P4NCompressor_decompress",\
-    "_P4NCompressor_create",\
-    "_P4NCompressor_get_compressed_data",\
-    "_test_p4nzdec128v16",\
-    "_main",\
-    "_create_reader_from_js",\
-    "_decode_with_reader",\
-    "_destroy_reader",\
-    "_malloc",\
-    "_free"\
+	"_om_header_size",\
+	"_om_header_type",\
+	"_om_trailer_size",\
+	"_om_trailer_read",\
+	"_om_variable_init",\
+	"_om_variable_get_type",\
+	"_om_variable_get_compression",\
+	"_om_variable_get_scale_factor",\
+	"_om_variable_get_add_offset",\
+	"_om_variable_get_dimensions",\
+	"_om_variable_get_chunks",\
+	"_om_variable_get_name",\
+	"_om_variable_get_children_count",\
+	"_om_variable_get_children",\
+	"_om_variable_get_scalar",\
+	"_om_decoder_init",\
+	"_om_decoder_init_index_read",\
+	"_om_decoder_init_data_read",\
+	"_om_decoder_read_buffer_size",\
+	"_om_decoder_next_index_read",\
+	"_om_decoder_next_data_read",\
+	"_om_decoder_decode_chunks",\
+	"_om_variable_get_chunk_count",\
+	"_om_variable_get_chunk_value",\
+	"_om_variable_get_dimension_count",\
+	"_om_variable_get_dimension_value",\
+	"_malloc",\
+	"_free"\
 ]'
 
 RUNTIME_METHODS = '[\
-    "ccall",\
-    "cwrap"\
+	"ccall",\
+	"cwrap",\
+	"setValue",\
+	"getValue"\
 ]'
 
 INCLUDES = -I/src/C/include \
           -I/src/om-file-format/c/include
 
 CFLAGS = $(INCLUDES) \
-         -msimd128 \
-         -mssse3 \
-         -O3 \
-         -s EXPORTED_FUNCTIONS=$(EXPORTED_FUNCS) \
-         -s EXPORTED_RUNTIME_METHODS=$(RUNTIME_METHODS) \
-         -s INITIAL_MEMORY=67108864 \
-         -s WASM_BIGINT \
-         -s FILESYSTEM=0 \
-         -s ELIMINATE_DUPLICATE_FUNCTIONS=1 \
-         -Wbad-function-cast \
-         -fwasm-exceptions
+			-msimd128 \
+			-mssse3 \
+			-O3 \
+			-s EXPORTED_FUNCTIONS=$(EXPORTED_FUNCS) \
+			-s EXPORTED_RUNTIME_METHODS=$(RUNTIME_METHODS) \
+			-s INITIAL_MEMORY=67108864 \
+			-s WASM_BIGINT \
+			-s FILESYSTEM=0 \
+			-s ELIMINATE_DUPLICATE_FUNCTIONS=1 \
+			-Wbad-function-cast \
+			-fwasm-exceptions
 
 # Define the source files
 SRC_FILES = $(wildcard /src/C/src/*.c) \

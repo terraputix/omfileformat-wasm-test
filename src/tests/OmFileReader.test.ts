@@ -1,31 +1,19 @@
 import { describe, beforeAll, afterEach, it, expect, beforeEach } from "vitest";
-import { initWasm } from "../lib/wasm";
+import { getWasmModule, initWasm, WasmModule } from "../lib/wasm";
 import { OmFileReader } from "../lib/OmFileReader";
 import fs from "fs/promises";
 import path from "path";
-import { OmDataType } from "../lib/types";
+import { CompressionType, OmDataType, Range } from "../lib/types";
+import { FileBackend } from "../lib/backends/FileBackend";
 
 describe("OmFileReader", () => {
   let testFileData: ArrayBuffer;
-  // Create a new reader for each test
   let reader: OmFileReader;
-
-  const getBytesCallback = (offset: bigint, count: bigint): Uint8Array => {
-    // Convert BigInt to Number for slice operation
-    const offsetNum = Number(offset);
-    const countNum = Number(count);
-
-    // Add safety checks
-    if (offsetNum > Number.MAX_SAFE_INTEGER || countNum > Number.MAX_SAFE_INTEGER) {
-      throw new Error("Offset or count exceeds safe integer range");
-    }
-
-    return new Uint8Array(testFileData.slice(offsetNum, offsetNum + countNum));
-  };
+  let wasm: WasmModule;
 
   // Initialize WASM and load test file before all tests
   beforeAll(async () => {
-    await initWasm();
+    wasm = await initWasm();
 
     // Load the test file
     // Currently this file is not committed to the repository
@@ -36,158 +24,173 @@ describe("OmFileReader", () => {
   });
 
   beforeEach(() => {
-    reader = new OmFileReader();
+    const backend = new FileBackend(testFileData);
+    reader = new OmFileReader(backend, wasm);
   });
 
   afterEach(() => {
     if (reader) {
-      reader.destroy();
+      reader.dispose();
     }
   });
 
-  it("should successfully create a reader", async () => {
-    await expect(reader.createReader(getBytesCallback, testFileData.byteLength)).resolves.not.toThrow();
+  it("should successfully initialize a reader", async () => {
+    await expect(reader.initialize()).resolves.not.toThrow();
   });
 
-  it("should fail to create reader with invalid callback", async () => {
-    const invalidCallback = (offset: bigint, count: bigint) => {
-      throw new Error("Invalid callback");
-    };
+  it("should fail to initialize reader with invalid data", async () => {
+    const invalidBackend = new FileBackend(new ArrayBuffer(10)); // Too small to be valid
+    const invalidReader = new OmFileReader(invalidBackend, wasm);
 
-    await expect(reader.createReader(invalidCallback, testFileData.byteLength)).rejects.toThrow();
+    await expect(invalidReader.initialize()).rejects.toThrow();
+  });
+
+  // Test getting name - this exercises the string handling
+  it("should get the variable name if available", async () => {
+    await reader.initialize();
+    const name = reader.getName();
+    console.log("Variable name:", name);
+    // The name could be null if not set in file, so we just verify the API
+    expect(typeof name === "string" || name === null).toBe(true);
+  });
+
+  // Test getting dimensions
+  it("should correctly report dimensions", async () => {
+    await reader.initialize();
+    const dimensions = reader.getDimensions();
+
+    expect(dimensions).toStrictEqual([5, 5]);
+  });
+
+  // Test getting chunk dimensions
+  it("should correctly report chunk dimensions", async () => {
+    await reader.initialize();
+    const chunks = reader.getChunkDimensions();
+
+    expect(chunks).toStrictEqual([2, 2]);
+    // Chunk dimensions array length should match file dimensions
+    const dims = reader.getDimensions();
+    expect(chunks.length).toBe(dims.length);
+  });
+
+  // Test data type and compression
+  it("should report data type and compression correctly", async () => {
+    await reader.initialize();
+    const dataType = reader.dataType();
+    const compression = reader.compression();
+
+    expect(dataType).toBe(OmDataType.FloatArray);
+    expect(compression).toBe(CompressionType.PforDelta2dInt16);
+  });
+
+  // Test scale factor and add offset
+  it("should report scale factor and add offset", async () => {
+    await reader.initialize();
+    const scaleFactor = reader.scaleFactor();
+    const addOffset = reader.addOffset();
+
+    expect(scaleFactor).toBe(1);
+    expect(addOffset).toBe(0);
+  });
+
+  // Test number of children
+  it("should report the correct number of children", async () => {
+    await reader.initialize();
+    const numChildren = reader.numberOfChildren();
+    // Test file does not have children
+    expect(numChildren).toBe(0);
   });
 
   it("should successfully read data", async () => {
-    await reader.createReader(getBytesCallback, testFileData.byteLength);
+    await reader.initialize();
 
-    const dimReadRange: Array<{ start: bigint; end: bigint }> = [
-      { start: BigInt(0), end: BigInt(10) },
-      { start: BigInt(0), end: BigInt(10) },
-      { start: BigInt(0), end: BigInt(10) },
+    const dimReadRange: Range[] = [
+      { start: 0, end: 2 },
+      { start: 0, end: 2 },
     ];
 
-    const output = reader.read(OmDataType.DATA_TYPE_FLOAT_ARRAY, dimReadRange);
+    const output = await reader.read(wasm.DATA_TYPE_FLOAT_ARRAY, dimReadRange);
     expect(output).toBeInstanceOf(Float32Array);
-    // expect(() => reader.read(OmDataType.DATA_TYPE_FLOAT_ARRAY, dimReadRange)).not.toThrow();
 
-    expect(Array.from(output.slice(0, 10))).toEqual(
-      expect.arrayContaining([
-        expect.closeTo(-24.25, 0.001),
-        expect.closeTo(-24.75, 0.001),
-        expect.closeTo(-23.85, 0.001),
-        expect.closeTo(-23.95, 0.001),
-        expect.closeTo(-25.45, 0.001),
-        expect.closeTo(-25.9, 0.001),
-        expect.closeTo(-26.4, 0.001),
-        expect.closeTo(-26.45, 0.001),
-        expect.closeTo(-26.2, 0.001),
-        expect.closeTo(-26.2, 0.001),
-      ])
-    );
+    console.log("Output data:", output);
+
+    expect(output).toStrictEqual(new Float32Array([0, 1, 5, 6]));
   });
 
   it("should successfully readInto data", async () => {
-    await reader.createReader(getBytesCallback, testFileData.byteLength);
+    await reader.initialize();
 
-    // Adjust these values according to your test file's dimensions
-    const outputSize = 5000; // Adjust based on your test data
+    const outputSize = 4;
     const output = new Float32Array(outputSize);
-    const dimReadStart = new BigInt64Array([0n, 0n, 0n]);
-    const dimReadEnd = new BigInt64Array([10n, 10n, 10n]);
-    const intoCubeOffset = new BigInt64Array([0n, 0n, 0n]);
-    const intoCubeDimension = new BigInt64Array([10n, 10n, 10n]);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 2 },
+      { start: 0, end: 2 },
+    ];
 
-    expect(() =>
-      reader.readInto(
-        output,
-        OmDataType.DATA_TYPE_FLOAT_ARRAY,
-        dimReadStart,
-        dimReadEnd,
-        intoCubeOffset,
-        intoCubeDimension
-      )
-    ).not.toThrow();
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).resolves.not.toThrow();
 
-    expect(Array.from(output.slice(0, 10))).toEqual(
-      expect.arrayContaining([
-        expect.closeTo(-24.25, 0.001),
-        expect.closeTo(-24.75, 0.001),
-        expect.closeTo(-23.85, 0.001),
-        expect.closeTo(-23.95, 0.001),
-        expect.closeTo(-25.45, 0.001),
-        expect.closeTo(-25.9, 0.001),
-        expect.closeTo(-26.4, 0.001),
-        expect.closeTo(-26.45, 0.001),
-        expect.closeTo(-26.2, 0.001),
-        expect.closeTo(-26.2, 0.001),
-      ])
-    );
+    expect(output).toStrictEqual(new Float32Array([0, 1, 5, 6]));
   });
 
   it("should fail with invalid dimensions", async () => {
-    await reader.createReader(getBytesCallback, testFileData.byteLength);
+    await reader.initialize();
 
-    const output = new Float32Array(1000);
-    const dimReadStart = new BigInt64Array([0n]); // Invalid dimension count
-    const dimReadEnd = new BigInt64Array([10n]);
-    const intoCubeOffset = new BigInt64Array([0n]);
-    const intoCubeDimension = new BigInt64Array([10n]);
+    const output = new Float32Array(125);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+    ]; // Wrong number of dimensions
 
-    expect(() =>
-      reader.readInto(
-        output,
-        OmDataType.DATA_TYPE_FLOAT_ARRAY,
-        dimReadStart,
-        dimReadEnd,
-        intoCubeOffset,
-        intoCubeDimension
-      )
-    ).toThrow();
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).rejects.toThrow();
   });
 
   it("should handle out-of-bounds reads", async () => {
-    reader = new OmFileReader();
+    await reader.initialize();
 
-    await reader.createReader(getBytesCallback, testFileData.byteLength);
+    const output = new Float32Array(10000);
+    const dimReadRange: Range[] = [
+      { start: 0, end: 100 },
+      { start: 0, end: 100 },
+    ]; // This exceeds the dimensions of the test file
 
-    const output = new Uint8Array(1000);
-    const dimReadStart = new BigInt64Array([0n, 0n, 0n]);
-    const dimReadEnd = new BigInt64Array([1000n, 1000n, 1000n]); // Too large for defined output
-    const intoCubeOffset = new BigInt64Array([0n, 0n, 0n]);
-    const intoCubeDimension = new BigInt64Array([1000n, 1000n, 1000n]);
-
-    expect(() =>
-      reader.readInto(
-        output,
-        OmDataType.DATA_TYPE_FLOAT_ARRAY,
-        dimReadStart,
-        dimReadEnd,
-        intoCubeOffset,
-        intoCubeDimension
-      )
-    ).toThrow();
+    await expect(reader.readInto(wasm.DATA_TYPE_FLOAT_ARRAY, output, dimReadRange)).rejects.toThrow();
   });
 
   it("should properly clean up resources", async () => {
-    await reader.createReader(getBytesCallback, testFileData.byteLength);
-    reader.destroy();
+    await reader.initialize();
+    reader.dispose();
 
-    // Attempting to use the reader after destruction should throw
-    const output = new Uint8Array(1000);
-    const dimReadStart = new BigInt64Array([0n, 0n, 0n]);
-    const dimReadEnd = new BigInt64Array([10n, 10n, 10n]);
-    const intoCubeOffset = new BigInt64Array([0n, 0n, 0n]);
-    const intoCubeDimension = new BigInt64Array([10n, 10n, 10n]);
+    // Attempting to use the reader after disposal should throw
+    const dimReadRange: Range[] = [
+      { start: 0, end: 5 },
+      { start: 0, end: 5 },
+    ];
 
-    expect(() =>
-      reader.readInto(
-        output,
-        OmDataType.DATA_TYPE_FLOAT_ARRAY,
-        dimReadStart,
-        dimReadEnd,
-        intoCubeOffset,
-        intoCubeDimension
-      )
-    ).toThrow();
+    await expect(reader.read(wasm.DATA_TYPE_FLOAT_ARRAY, dimReadRange)).rejects.toThrow();
   });
+
+  // // Test getting children if applicable
+  // it("should handle children correctly", async () => {
+  //   await reader.initialize();
+  //   const numChildren = reader.numberOfChildren();
+
+  //   if (numChildren > 0) {
+  //     const child = await reader.getChild(0);
+  //     expect(child).not.to.be.null;
+
+  //     if (child) {
+  //       // Test that child operations work
+  //       const childDimensions = child.getDimensions();
+  //       expect(childDimensions).to.be.an("array");
+  //     }
+  //   }
+  // });
+
+  // // Test flat variable metadata
+  // it("should retrieve metadata correctly", async () => {
+  //   await reader.initialize();
+  //   const metadata = await reader.getFlatVariableMetadata();
+  //   expect(metadata).to.be.an("object");
+  // });
 });

@@ -1,15 +1,30 @@
-export function createTestData(size: number): Uint16Array {
-  const data = new Uint16Array(size);
-  for (let i = 0; i < data.length; i++) {
-    data[i] = i % 65536;
-  }
-  return data;
-}
+import { describe, it, expect } from "vitest";
 
-export function verifyData(original: Uint16Array, decompressed: Uint16Array): boolean {
-  if (original.length !== decompressed.length) return false;
-  for (let i = 0; i < original.length; i++) {
-    if (original[i] !== decompressed[i]) return false;
+/**
+ * Helper function to compare arrays of floating point numbers with a specified tolerance
+ * @param actual The actual array from the test
+ * @param expected The expected values
+ * @param tolerance Maximum allowed difference (default: 0.01)
+ * @param message Optional message to display on failure
+ */
+export function expectFloatArrayToBeClose(
+  actual: ArrayLike<number>,
+  expected: number[],
+  tolerance: number = 0.01,
+  message: string = "Array values should match within tolerance"
+): void {
+  // Check array lengths match
+  expect(actual.length, `${message} (array length mismatch)`).toEqual(expected.length);
+
+  // Check each value with tolerance
+  for (let i = 0; i < expected.length; i++) {
+    const diff = Math.abs(actual[i] - expected[i]);
+    expect(
+      diff,
+      `${message} at index ${i}: expected ${expected[i]}, got ${actual[i]}, difference ${diff}`
+    ).toBeLessThanOrEqual(tolerance);
   }
-  return true;
+
+  // If test gets here, all values matched within tolerance
+  console.log(`Successfully verified ${expected.length} values within tolerance of ${tolerance}`);
 }
