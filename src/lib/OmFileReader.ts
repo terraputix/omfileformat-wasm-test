@@ -6,17 +6,13 @@ export class OmFileReader {
   private backend: OmFileReaderBackend;
   private wasm: WasmModule;
   private variable: number | null;
-  private variableData: Uint8Array | null;
   private variableDataPtr: number | null;
-  private offsetSize: OffsetSize | null;
 
   constructor(backend: OmFileReaderBackend, wasm?: WasmModule) {
     this.backend = backend;
     this.wasm = wasm || getWasmModule();
     this.variable = null;
-    this.variableData = null;
     this.variableDataPtr = null;
-    this.offsetSize = null;
   }
 
   /**
@@ -33,9 +29,8 @@ export class OmFileReader {
   async initialize(): Promise<OmFileReader> {
     // Similar to the 'new' method in Rust
     const headerSize = this.wasm.om_header_size();
-    const headerData = await this.backend.getBytes(0, headerSize);
 
-    // Create a pointer to the header data in WASM memory
+    const headerData = await this.backend.getBytes(0, headerSize);
     const headerPtr = this.wasm._malloc(headerData.length);
     this.wasm.HEAPU8.set(headerData, headerPtr);
 
@@ -50,15 +45,12 @@ export class OmFileReader {
 
     if (headerType === this.wasm.OM_HEADER_LEGACY) {
       variableData = headerData;
-      this.offsetSize = null;
     } else if (headerType === this.wasm.OM_HEADER_READ_TRAILER) {
       const fileSize = await this.backend.count();
       const trailerSize = this.wasm.om_trailer_size();
       const trailerOffset = fileSize - trailerSize;
 
-      const trailerData = await this.backend.getBytes(trailerOffset, trailerSize);
-      const trailerPtr = this.wasm._malloc(trailerData.length);
-      this.wasm.HEAPU8.set(trailerData, trailerPtr);
+      const trailerPtr = await this.readDataBlock(trailerOffset, trailerSize);
 
       // Create pointers for offset and size (out parameters)
       const offsetPtr = this.wasm._malloc(8); // 64-bit value = 8 bytes
@@ -78,8 +70,6 @@ export class OmFileReader {
       const offset = Number(this.wasm.getValue(offsetPtr, "i64"));
       const size = Number(this.wasm.getValue(sizePtr, "i64"));
 
-      this.offsetSize = { offset, size };
-
       // Free memory
       this.wasm._free(trailerPtr);
       this.wasm._free(offsetPtr);
@@ -96,9 +86,6 @@ export class OmFileReader {
     const variableDataPtr = this.wasm._malloc(variableData.length);
     this.wasm.HEAPU8.set(variableData, variableDataPtr);
     this.variable = this.wasm.om_variable_init(variableDataPtr);
-
-    // Store the variable data to prevent GC
-    this.variableData = variableData;
     this.variableDataPtr = variableDataPtr;
 
     this.wasm._free(headerPtr);
@@ -205,18 +192,12 @@ export class OmFileReader {
   }
 
   async initChildFromOffsetSize(offsetSize: OffsetSize): Promise<OmFileReader> {
-    const childData = await this.backend.getBytes(offsetSize.offset, offsetSize.size);
+    const childDataPtr = await this.readDataBlock(offsetSize.offset, offsetSize.size);
 
     const childReader = new OmFileReader(this.backend, this.wasm);
 
-    // Initialize variable data
-    const childDataPtr = this.wasm._malloc(childData.length);
-    this.wasm.HEAPU8.set(childData, childDataPtr);
-
     childReader.variable = this.wasm.om_variable_init(childDataPtr);
-    childReader.variableData = childData;
     childReader.variableDataPtr = childDataPtr;
-    childReader.offsetSize = offsetSize;
 
     return childReader;
   }
@@ -320,147 +301,6 @@ export class OmFileReader {
     this.wasm.om_decoder_init_data_read(dataReadPtr, indexReadPtr);
 
     return dataReadPtr;
-  }
-
-  private async decode(decoderPtr: number, outputArray: TypedArray): Promise<void> {
-    console.log(`Starting decode with ${outputArray.constructor.name}, length=${outputArray.length}`);
-
-    const outputPtr = this.wasm._malloc(outputArray.byteLength);
-    const chunkBufferSize = Number(this.wasm.om_decoder_read_buffer_size(decoderPtr));
-    const chunkBufferPtr = this.wasm._malloc(chunkBufferSize);
-    // Create index_read struct
-    const indexReadPtr = this.newIndexRead(decoderPtr);
-    const errorPtr = this.wasm._malloc(4);
-    // Initialize error to OK
-    this.wasm.setValue(errorPtr, this.wasm.ERROR_OK, "i32");
-
-    try {
-      // Loop over index blocks
-      let indexBlockCount = 0;
-      while (this.wasm.om_decoder_next_index_read(decoderPtr, indexReadPtr)) {
-        indexBlockCount++;
-
-        // Get index_read parameters
-        const indexOffset = Number(this.wasm.getValue(indexReadPtr, "i64"));
-        const indexCount = Number(this.wasm.getValue(indexReadPtr + 8, "i64"));
-
-        console.log(`Index block #${indexBlockCount}: offset=${indexOffset}, count=${indexCount}`);
-
-        // Get bytes for index-read
-        const indexData = await this.backend.getBytes(indexOffset, indexCount);
-        const indexDataPtr = this.wasm._malloc(indexData.length);
-        this.wasm.HEAPU8.set(indexData, indexDataPtr);
-
-        // Create data_read struct
-        let dataReadPtr = this.newDataRead(indexReadPtr);
-
-        try {
-          // Loop over data blocks and read compressed data chunks
-          // Loop over data blocks
-          let dataBlockCount = 0;
-          while (
-            this.wasm.om_decoder_next_data_read(decoderPtr, dataReadPtr, indexDataPtr, BigInt(indexCount), errorPtr)
-          ) {
-            dataBlockCount++;
-
-            // Get data_read parameters
-            const dataOffset = Number(this.wasm.getValue(dataReadPtr, "i64"));
-            const dataCount = Number(this.wasm.getValue(dataReadPtr + 8, "i64"));
-            const chunkIndexPtr = dataReadPtr + 32; // offset(8), count(8), indexRange(16)
-            console.log(
-              `  Data block #${dataBlockCount}: offset=${dataOffset}, count=${dataCount}, chunkIndexPtr=${chunkIndexPtr}`
-            );
-
-            // Get bytes for data-read
-            const dataBlock = await this.backend.getBytes(dataOffset, dataCount);
-            const dataBlockPtr = this.wasm._malloc(dataBlock.length);
-            this.wasm.HEAPU8.set(dataBlock, dataBlockPtr);
-
-            try {
-              // Decode chunks
-              const success = this.wasm.om_decoder_decode_chunks(
-                decoderPtr,
-                chunkIndexPtr,
-                dataBlockPtr,
-                BigInt(dataCount),
-                outputPtr,
-                chunkBufferPtr,
-                errorPtr
-              );
-
-              // Check for error
-              if (!success) {
-                const error = this.wasm.getValue(errorPtr, "i32");
-                throw new Error(`Decoder failed to decode chunks: error ${error}`);
-              }
-            } finally {
-              this.wasm._free(dataBlockPtr);
-            }
-          }
-
-          // Check for errors after data_read loop
-          const error = this.wasm.getValue(errorPtr, "i32");
-          if (error !== this.wasm.ERROR_OK) {
-            throw new Error(`Data read error: ${error}`);
-          }
-        } finally {
-          this.wasm._free(dataReadPtr);
-          this.wasm._free(indexDataPtr);
-        }
-      }
-
-      // Copy the data back to the output array with the correct type
-      this.copyToTypedArray(outputPtr, outputArray);
-    } finally {
-      this.wasm._free(errorPtr);
-      this.wasm._free(indexReadPtr);
-      this.wasm._free(chunkBufferPtr);
-      this.wasm._free(outputPtr);
-    }
-  }
-
-  /**
-   * Helper method to copy data from WASM memory to a TypedArray with the correct type
-   */
-  private copyToTypedArray(sourcePtr: number, targetArray: TypedArray): void {
-    switch (targetArray.constructor) {
-      case Float32Array:
-        const f32Array = new Float32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Float32Array).set(f32Array);
-        break;
-      case Float64Array:
-        const f64Array = new Float64Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Float64Array).set(f64Array);
-        break;
-      case Int8Array:
-        const i8Array = new Int8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Int8Array).set(i8Array);
-        break;
-      case Uint8Array:
-        const u8Array = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Uint8Array).set(u8Array);
-        break;
-      case Int16Array:
-        const i16Array = new Int16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Int16Array).set(i16Array);
-        break;
-      case Uint16Array:
-        const u16Array = new Uint16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Uint16Array).set(u16Array);
-        break;
-      case Int32Array:
-        const i32Array = new Int32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Int32Array).set(i32Array);
-        break;
-      case Uint32Array:
-        const u32Array = new Uint32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
-        (targetArray as Uint32Array).set(u32Array);
-        break;
-      default:
-        // Fallback to byte-by-byte copy
-        const byteArray = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.byteLength);
-        new Uint8Array(targetArray.buffer).set(byteArray);
-    }
   }
 
   async read(
@@ -616,31 +456,147 @@ export class OmFileReader {
     }
   }
 
-  // Get all variable metadata in a flat structure
-  async getFlatVariableMetadata(): Promise<Record<string, OffsetSize>> {
-    const result: Record<string, OffsetSize> = {};
-    await this.collectVariableMetadata([], result);
-    return result;
+  private async decode(decoderPtr: number, outputArray: TypedArray): Promise<void> {
+    console.log(`Starting decode with ${outputArray.constructor.name}, length=${outputArray.length}`);
+
+    const outputPtr = this.wasm._malloc(outputArray.byteLength);
+    const chunkBufferSize = Number(this.wasm.om_decoder_read_buffer_size(decoderPtr));
+    const chunkBufferPtr = this.wasm._malloc(chunkBufferSize);
+    // Create index_read struct
+    const indexReadPtr = this.newIndexRead(decoderPtr);
+    const errorPtr = this.wasm._malloc(4);
+    // Initialize error to OK
+    this.wasm.setValue(errorPtr, this.wasm.ERROR_OK, "i32");
+
+    try {
+      // Loop over index blocks
+      let indexBlockCount = 0;
+      while (this.wasm.om_decoder_next_index_read(decoderPtr, indexReadPtr)) {
+        indexBlockCount++;
+
+        // Get index_read parameters
+        const indexOffset = Number(this.wasm.getValue(indexReadPtr, "i64"));
+        const indexCount = Number(this.wasm.getValue(indexReadPtr + 8, "i64"));
+
+        console.log(`Index block #${indexBlockCount}: offset=${indexOffset}, count=${indexCount}`);
+
+        // Get bytes for index-read
+        const indexDataPtr = await this.readDataBlock(indexOffset, indexCount);
+
+        // Create data_read struct
+        let dataReadPtr = this.newDataRead(indexReadPtr);
+
+        try {
+          // Loop over data blocks and read compressed data chunks
+          // Loop over data blocks
+          let dataBlockCount = 0;
+          while (
+            this.wasm.om_decoder_next_data_read(decoderPtr, dataReadPtr, indexDataPtr, BigInt(indexCount), errorPtr)
+          ) {
+            dataBlockCount++;
+
+            // Get data_read parameters
+            const dataOffset = Number(this.wasm.getValue(dataReadPtr, "i64"));
+            const dataCount = Number(this.wasm.getValue(dataReadPtr + 8, "i64"));
+            const chunkIndexPtr = dataReadPtr + 32; // offset(8), count(8), indexRange(16)
+            console.log(
+              `  Data block #${dataBlockCount}: offset=${dataOffset}, count=${dataCount}, chunkIndexPtr=${chunkIndexPtr}`
+            );
+
+            // Get bytes for data-read
+            const dataBlockPtr = await this.readDataBlock(dataOffset, dataCount);
+
+            try {
+              // Decode chunks
+              const success = this.wasm.om_decoder_decode_chunks(
+                decoderPtr,
+                chunkIndexPtr,
+                dataBlockPtr,
+                BigInt(dataCount),
+                outputPtr,
+                chunkBufferPtr,
+                errorPtr
+              );
+
+              // Check for error
+              if (!success) {
+                const error = this.wasm.getValue(errorPtr, "i32");
+                throw new Error(`Decoder failed to decode chunks: error ${error}`);
+              }
+            } finally {
+              this.wasm._free(dataBlockPtr);
+            }
+          }
+
+          // Check for errors after data_read loop
+          const error = this.wasm.getValue(errorPtr, "i32");
+          if (error !== this.wasm.ERROR_OK) {
+            throw new Error(`Data read error: ${error}`);
+          }
+        } finally {
+          this.wasm._free(dataReadPtr);
+          this.wasm._free(indexDataPtr);
+        }
+      }
+
+      // Copy the data back to the output array with the correct type
+      this.copyToTypedArray(outputPtr, outputArray);
+    } finally {
+      this.wasm._free(errorPtr);
+      this.wasm._free(indexReadPtr);
+      this.wasm._free(chunkBufferPtr);
+      this.wasm._free(outputPtr);
+    }
   }
 
-  // Helper method to recursively collect variable metadata
-  private async collectVariableMetadata(currentPath: string[], result: Record<string, OffsetSize>): Promise<void> {
-    // Add current variable's metadata if it has a name and offset_size
-    const name = this.getName();
-    if (name !== null && this.offsetSize !== null) {
-      const pathWithName = [...currentPath, name];
-      const pathStr = pathWithName.join("/");
-      result[pathStr] = this.offsetSize;
-    }
+  private async readDataBlock(offset: number, size: number): Promise<number> {
+    const data = await this.backend.getBytes(offset, size);
+    const ptr = this.wasm._malloc(data.length);
+    this.wasm.HEAPU8.set(data, ptr);
+    return ptr;
+  }
 
-    // Process children
-    const numChildren = this.numberOfChildren();
-    for (let i = 0; i < numChildren; i++) {
-      const child = await this.getChild(i);
-      if (child !== null) {
-        const childPath = name !== null ? [...currentPath, name] : currentPath;
-        await child.collectVariableMetadata(childPath, result);
-      }
+  /**
+   * Helper method to copy data from WASM memory to a TypedArray with the correct type
+   */
+  private copyToTypedArray(sourcePtr: number, targetArray: TypedArray): void {
+    switch (targetArray.constructor) {
+      case Float32Array:
+        const f32Array = new Float32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Float32Array).set(f32Array);
+        break;
+      case Float64Array:
+        const f64Array = new Float64Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Float64Array).set(f64Array);
+        break;
+      case Int8Array:
+        const i8Array = new Int8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int8Array).set(i8Array);
+        break;
+      case Uint8Array:
+        const u8Array = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint8Array).set(u8Array);
+        break;
+      case Int16Array:
+        const i16Array = new Int16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int16Array).set(i16Array);
+        break;
+      case Uint16Array:
+        const u16Array = new Uint16Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint16Array).set(u16Array);
+        break;
+      case Int32Array:
+        const i32Array = new Int32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Int32Array).set(i32Array);
+        break;
+      case Uint32Array:
+        const u32Array = new Uint32Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.length);
+        (targetArray as Uint32Array).set(u32Array);
+        break;
+      default:
+        // Fallback to byte-by-byte copy
+        const byteArray = new Uint8Array(this.wasm.HEAPU8.buffer, sourcePtr, targetArray.byteLength);
+        new Uint8Array(targetArray.buffer).set(byteArray);
     }
   }
 
@@ -651,6 +607,5 @@ export class OmFileReader {
       this.variableDataPtr = null;
     }
     this.variable = null;
-    this.variableData = null;
   }
 }
