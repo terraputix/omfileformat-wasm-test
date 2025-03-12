@@ -312,8 +312,6 @@ export class OmFileReader {
     if (this.variable === null) throw new Error("Reader not initialized");
 
     if (this.dataType() !== dataType) {
-      console.log(this.dataType());
-      console.log(dataType);
       throw new Error(`Invalid data type: expected ${this.dataType()}, got ${dataType}`);
     }
 
@@ -382,9 +380,6 @@ export class OmFileReader {
 
     // Validate dimension counts
     if (fileDims.length !== nDims) {
-      console.log(fileDims);
-      console.log(nDims);
-
       throw new Error(`Mismatched dimensions: file has ${fileDims.length}, request has ${nDims}`);
     }
 
@@ -438,12 +433,7 @@ export class OmFileReader {
         if (error !== this.wasm.ERROR_OK) {
           throw new Error(`Decoder initialization failed: error code ${error}`);
         }
-
-        console.log("Starting decode");
-
-        // Use our updated decode method to read the data
         await this.decode(decoderPtr, output);
-        console.log("Finished decode");
       } finally {
         this.wasm._free(decoderPtr);
       }
