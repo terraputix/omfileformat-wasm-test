@@ -7,30 +7,27 @@ import { CompressionType, OmDataType, Range } from "../lib/types";
 import { FileBackend } from "../lib/backends/FileBackend";
 
 describe("OmFileReader", () => {
-  let testFileData: ArrayBuffer;
   let reader: OmFileReader;
   let wasm: WasmModule;
+  let backend: FileBackend;
 
   // Initialize WASM and load test file before all tests
   beforeAll(async () => {
     wasm = await initWasm();
-
-    // Load the test file
-    // Currently this file is not committed to the repository
-    // Thus we skip tests in CI according to the vitest configuration
-    const filePath = path.join(__dirname, "../../test-data/read_test.om");
-    const fileBuffer = await fs.readFile(filePath);
-    testFileData = fileBuffer.buffer;
   });
 
   beforeEach(() => {
-    const backend = new FileBackend(testFileData);
+    const testFilePath = path.join(__dirname, "../../test-data/read_test.om");
+    backend = new FileBackend(testFilePath);
     reader = new OmFileReader(backend, wasm);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     if (reader) {
       reader.dispose();
+    }
+    if (backend) {
+      await backend.close();
     }
   });
 
