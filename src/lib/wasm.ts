@@ -123,15 +123,11 @@ export async function initWasm(): Promise<WasmModule> {
   if (wasmModuleWrapped) return wasmModuleWrapped;
 
   try {
-    const mod = await import("../../dist/wasm/om_reader_wasm.js");
-    wasmModuleRaw = mod.default;
+    // Import the factory function that creates the module
+    const OmFileFormat = await import("../../dist/wasm/om_reader_wasm.js");
 
-    // Wait for the module to be fully initialized
-    if (!wasmModuleRaw.calledRun) {
-      await new Promise<void>((resolve) => {
-        wasmModuleRaw.onRuntimeInitialized = () => resolve();
-      });
-    }
+    // Initialize the module by calling the factory function
+    const wasmModuleRaw = await OmFileFormat.default();
 
     // Create our wrapped module with the expected interface
     wasmModuleWrapped = createWrappedModule(wasmModuleRaw);
