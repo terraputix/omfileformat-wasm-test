@@ -1,45 +1,52 @@
-# OmFileFormatC WASM Test
+# OmFileFormat JavaScript
 
-POC how to compile OmFileFormatC to wasm and related benchmarks and tests.
+A JavaScript reader for the [Open-Meteo File Format](https://github.com/open-meteo/om-file-format/)!
 
-## Prerequisites
+## Overview
 
-- Docker
-- Node.js
+This library provides JavaScript/TypeScript bindings to the OmFileFormat C library through WebAssembly. It enables efficient reading of OmFile data in web browsers and Node.js environments.
 
-## Compiling the Project
+## Features
+
+- Read OmFile format (scientific data format optimized for meteorological data)
+- High-performance data access through WebAssembly
+- Browser and Node.js compatibility
+- TypeScript type definitions included
+
+## Building from Source
+
+### Prerequisites
+
+- Node.js 16+
+- Docker (for building the WebAssembly component)
+
+### Build Steps
 
 We compile the project using the Emscripten Docker container
 
-```sh
-git submodule add https://github.com/open-meteo/om-file-format
-docker pull emscripten/emsdk
-docker run --rm -v $(pwd):/src emscripten/emsdk make -C /src
-```
+1. Clone the repository with submodules:
+   ```bash
+   git clone --recursive https://github.com/terraputix/omfiles-js.git
+   cd omfiles-js
+   ```
 
-This command mounts your current directory to /src inside the Docker container and runs the make command in that directory. The Makefile will compile the source files and generate the p4n_test.js and p4n_test.wasm files.
+2. Install dependencies and build the WebAssembly and TypeScript code:
+   ```bash
+   docker pull emscripten/emsdk
+   npm install
+   npm run build # This will use the emscripten/emsdk Docker container to build the WebAssembly module!
+   ```
 
-## Running the Tests
+3. Run the tests:
+   ```bash
+   npm run test
+   ```
 
-```sh
-# test p4
-node test_round_trip_p4n.js
-
-# benchmark p4
-node run_benchmark.js
-# prints the following on Intel(R) Core(TM) i7-10510U CPU @ 1.80GHz:
-# Encoding speed: 487.80 MB/s
-# Encoding speed: 500.00 MB/s
-# Encoding speed: 512.82 MB/s
-# Encoding speed: 540.54 MB/s
-# Encoding speed: 444.44 MB/s
-# Encoding speed: 465.12 MB/s
-# Encoding speed: 500.00 MB/s
-# Encoding speed: 512.82 MB/s
-# Encoding speed: 540.54 MB/s
-# Encoding speed: 555.56 MB/s
-```
 
 ## License
 
 This code depends on [TurboPFor](https://github.com/powturbo/TurboPFor-Integer-Compression) and [open-meteo](https://github.com/open-meteo/open-meteo) code their license restrictions apply.
+
+## Contributing
+
+Contributions are welcome! Please feel free to open an Issue or to submit a Pull Request.

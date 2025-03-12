@@ -1,7 +1,7 @@
 {
-  "name": "omfileformat-wasm",
+  "name": "omfiles-js",
   "version": "0.0.0",
-  "description": "WebAssembly bindings for OmFileFormat",
+  "description": "JavaScript bindings for omfiles using WebAssembly",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
