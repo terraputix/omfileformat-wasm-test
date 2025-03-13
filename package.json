@@ -9,7 +9,7 @@
     "build": "npm run build:wasm && npm run build:ts && npm run copy:wasm",
     "build:wasm": "sudo docker run --rm --user $(id -u):$(id -g) -v $(pwd):/src emscripten/emsdk make -C /src",
     "build:ts": "tsc -p tsconfig.json",
-    "copy:wasm": "copyfiles -u 0 src/wasm/*.{js,wasm} dist/",
+    "copy:wasm": "copyfiles -u 1 src/wasm/* dist/",
     "dev": "vite",
     "test": "vitest",
     "test:coverage": "vitest run --coverage"
