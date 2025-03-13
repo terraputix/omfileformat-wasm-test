@@ -6,15 +6,17 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "scripts": {
-    "build": "npm run build:wasm && npm run build:ts",
+    "build": "npm run build:wasm && npm run build:ts && npm run copy:wasm",
     "build:wasm": "sudo docker run --rm --user $(id -u):$(id -g) -v $(pwd):/src emscripten/emsdk make -C /src",
     "build:ts": "tsc -p tsconfig.json",
+    "copy:wasm": "copyfiles -u 0 src/wasm/*.{js,wasm} dist/",
     "dev": "vite",
     "test": "vitest",
     "test:coverage": "vitest run --coverage"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^2.1.8",
+    "copyfiles": "^2.4.1",
     "ts-node": "^10.9.2",
     "vite-plugin-top-level-await": "^1.5.0",
     "vite-plugin-wasm": "^3.4.1",
@@ -22,5 +24,9 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.758.0"
-  }
+  },
+  "files": [
+    "wasm/om_reader_wasm.js",
+    "wasm/om_reader_wasm.wasm"
+  ]
 }

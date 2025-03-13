@@ -62,8 +62,8 @@ CFLAGS = $(INCLUDES) \
 SRC_FILES = $(wildcard /src/C/src/*.c) \
 			$(wildcard /src/om-file-format/c/src/*.c)
 
-DIST_DIR = dist
-WASM_DIR = $(DIST_DIR)/wasm
+SRC_DIR = src
+WASM_DIR = $(SRC_DIR)/wasm
 OUT_JS = $(WASM_DIR)/om_reader_wasm.js
 
 # Default target
